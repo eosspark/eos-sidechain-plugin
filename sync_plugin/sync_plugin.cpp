@@ -1,5 +1,5 @@
 //
-// Created by 超超 on 2018/8/1.
+// Created by yc、sf on 2018/8/1.
 //
 
 #include <eosio/sync_plugin/sync_plugin.hpp>
