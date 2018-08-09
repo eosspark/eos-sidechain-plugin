@@ -78,6 +78,7 @@ namespace eosio {
 
 
 			optional<boost::signals2::scoped_connection> accepted_transaction_connection;
+			optional<boost::signals2::scoped_connection> sync_block_transaction_connection;
 			optional<boost::signals2::scoped_connection> irreversible_block_connection;
 
 			void accepted_transaction(const transaction_metadata_ptr& trx) {
@@ -228,7 +229,10 @@ namespace eosio {
 			chain.db().add_index<transaction_reversible_multi_index>();
 			chain.db().add_index<transaction_executed_multi_index>();
 
-			my->accepted_transaction_connection.emplace(chain.accepted_transaction.connect( [&](const transaction_metadata_ptr& trx) {
+//			my->accepted_transaction_connection.emplace(chain.accepted_transaction.connect( [&](const transaction_metadata_ptr& trx) {
+//				my->accepted_transaction(trx);
+//			}));
+			my->sync_block_transaction_connection.emplace(chain.sync_block_transaction.connect( [&](const transaction_metadata_ptr& trx) {
 				my->accepted_transaction(trx);
 			}));
 			my->irreversible_block_connection.emplace(chain.irreversible_block.connect( [&](const block_state_ptr& irb) {
@@ -243,6 +247,7 @@ namespace eosio {
 
 	void sync_plugin::plugin_shutdown() {
 		my->accepted_transaction_connection.reset();
+		my->sync_block_transaction_connection.reset();
 		my->irreversible_block_connection.reset();
 	}
 
