@@ -47,7 +47,7 @@ FC_REFLECT( eosio::chain::cactus_transfer, (from)(to)(quantity))
 #endif
 
 #ifndef DATA_FORMAT
-#define DATA_FORMAT(user, trx_id, to, quantity) "[\""+user+"\", \""+trx_id+"\", \""+to+"\", \""+quantity+"\"]"
+#define DATA_FORMAT(user, trx_id, to, quantity) "[\""+user+"\", \""+trx_id+"\", \""+from+"\", \""+to+"\", \""+quantity+"\"]"
 #endif
 
 namespace eosio {
@@ -140,7 +140,7 @@ namespace eosio {
 						// need to validate ?
 
 						// send propose or approve
-						string datastr = DATA_FORMAT(_peer_chain_account, string(itr->trx_id), string(data.to), data.quantity.to_string());
+						string datastr = DATA_FORMAT(_peer_chain_account, string(itr->trx_id), string(data.from), string(data.to), data.quantity.to_string());
 						vector<string> permissions = {_peer_chain_account};
 						try {
 							app().find_plugin<client_plugin>()->get_client_apis().push_action(_peer_chain_address, _peer_chain_constract,
