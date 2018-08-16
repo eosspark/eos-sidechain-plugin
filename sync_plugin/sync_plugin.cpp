@@ -1,5 +1,5 @@
 //
-// Created by 超超 on 2018/8/1.
+// Created by yc、sf on 2018/8/1.
 //
 
 #include <eosio/sync_plugin/sync_plugin.hpp>
@@ -12,16 +12,26 @@
 #include <eosio/chain/action.hpp>
 
 namespace eosio { namespace chain {
-	struct cactus_transfer {
-		account_name from;
-		account_name to;
-		asset quantity;
+		struct cactus_transfer {
+			account_name from;
+			account_name to;
+			asset quantity;
 
-		cactus_transfer() = default;
-		cactus_transfer(const account_name &from, const account_name &to, const asset &quantity) : from(from), to(to), quantity(quantity) {}
-	};
-}}
+			cactus_transfer() = default;
+			cactus_transfer(const account_name &from, const account_name &to, const asset &quantity) : from(from), to(to), quantity(quantity) {}
+		};
+
+		struct cactus_msigtrans {
+			account_name user;
+			transaction_id_type trx_id;
+			account_name from;
+			account_name to;
+			asset quantity;
+			cactus_msigtrans() = default;
+		};
+	}}
 FC_REFLECT( eosio::chain::cactus_transfer, (from)(to)(quantity))
+FC_REFLECT( eosio::chain::cactus_msigtrans, (user)(trx_id)(from)(to)(quantity))
 
 #ifndef DEFINE_INDEX
 #define DEFINE_INDEX(object_type, object_name, index_name) \
@@ -34,8 +44,6 @@ FC_REFLECT( eosio::chain::cactus_transfer, (from)(to)(quantity))
 			action_data data; \
 	}; \
 	\
-	struct by_block_num; \
-	struct by_trx_id; \
 	using index_name = chainbase::shared_multi_index_container< \
 		object_name, \
 		indexed_by< \
@@ -46,8 +54,29 @@ FC_REFLECT( eosio::chain::cactus_transfer, (from)(to)(quantity))
 	>;
 #endif
 
+#ifndef DEFINE_INDEX2
+#define DEFINE_INDEX2(object_type, object_name, index_name) \
+	struct object_name \
+			: public chainbase::object<object_type, object_name> { \
+			OBJECT_CTOR(object_name) \
+			id_type id; \
+			transaction_id_type trx_id; \
+			action_data data; \
+            time_point timestamp; \
+			uint32_t count; \
+	}; \
+	\
+	using index_name = chainbase::shared_multi_index_container< \
+		object_name, \
+		indexed_by< \
+				ordered_unique<tag<by_id>, member<object_name, object_name::id_type, &object_name::id>>, \
+				ordered_unique<tag<by_trx_id>, member<object_name, transaction_id_type, &object_name::trx_id>> \
+		> \
+	>;
+#endif
+
 #ifndef DATA_FORMAT
-#define DATA_FORMAT(user, trx_id, to, quantity) "[\""+user+"\", \""+trx_id+"\", \""+to+"\", \""+quantity+"\"]"
+#define DATA_FORMAT(user, trx_id, from, to, quantity) "[\""+user+"\", \""+trx_id+"\", \""+from+"\", \""+to+"\", \""+quantity+"\"]"
 #endif
 
 namespace eosio {
@@ -57,8 +86,11 @@ namespace eosio {
 
 	static appbase::abstract_plugin &_sync_plugin = app().register_plugin<sync_plugin>();
 
+	struct by_block_num;
+	struct by_trx_id;
+
 	DEFINE_INDEX(transaction_reversible_object_type, transaction_reversible_object, transaction_reversible_multi_index)
-	DEFINE_INDEX(transaction_executed_object_type, transaction_executed_object, transaction_executed_multi_index)
+	DEFINE_INDEX2(transaction_executed_object_type, transaction_executed_object, transaction_executed_multi_index)
 }
 
 CHAINBASE_SET_INDEX_TYPE(eosio::transaction_reversible_object, eosio::transaction_reversible_multi_index)
@@ -67,137 +99,156 @@ CHAINBASE_SET_INDEX_TYPE(eosio::transaction_executed_object, eosio::transaction_
 namespace eosio {
 
 	class sync_plugin_impl {
-		public:
-			chain_plugin*       chain_plug = nullptr;
-			fc::microseconds 	_max_irreversible_transaction_age_us;
-			bool				_send_propose_enabled = false;
-			string 				_peer_chain_address;
-			string 				_peer_chain_account;
-			string 				_peer_chain_constract;
-			string 				_my_chain_constract;
+	public:
+		chain_plugin*       chain_plug = nullptr;
+		fc::microseconds 	_max_irreversible_transaction_age_us;
+		bool				_send_propose_enabled = false;
+		string 				_peer_chain_address;
+		string 				_peer_chain_account;
+		string 				_peer_chain_constract;
+		string 				_my_chain_constract;
 
 
-			optional<boost::signals2::scoped_connection> accepted_transaction_connection;
-			optional<boost::signals2::scoped_connection> irreversible_block_connection;
+		optional<boost::signals2::scoped_connection> accepted_transaction_connection;
+		optional<boost::signals2::scoped_connection> sync_block_transaction_connection;
+		optional<boost::signals2::scoped_connection> irreversible_block_connection;
 
-			void accepted_transaction(const transaction_metadata_ptr& trx) {
-				auto& chain = chain_plug->chain();
-				auto& db = chain.db();
+		void accepted_transaction(const transaction_metadata_ptr& trx) {
+			auto& chain = chain_plug->chain();
+			auto& db = chain.db();
 
-				auto block_num = chain.pending_block_state()->block_num;
-				auto now = fc::time_point::now();
-				auto block_age = (chain.pending_block_time() > now) ? fc::microseconds(0) : (now - chain.pending_block_time());
+			auto block_num = chain.pending_block_state()->block_num;
+			auto now = fc::time_point::now();
+			auto block_age = (chain.pending_block_time() > now) ? fc::microseconds(0) : (now - chain.pending_block_time());
 
-				if (!_send_propose_enabled) {
-					return;
-				} else if ( _max_irreversible_transaction_age_us.count() >= 0 && block_age >= _max_irreversible_transaction_age_us ) {
-					return;
-				}
+			if (!_send_propose_enabled) {
+				return;
+			} else if ( _max_irreversible_transaction_age_us.count() >= 0 && block_age >= _max_irreversible_transaction_age_us ) {
+				return;
+			}
 
-				for (const auto action : trx->trx.actions) {
-					if (action.account == name(_my_chain_constract)
-						&& action.name == N(transfer)) {
-						const auto* existed = db.find<transaction_reversible_object, by_trx_id>(trx->id);
-						if (existed != nullptr) {
-							return;
-						}
+			for (const auto action : trx->trx.actions) {
+				if (action.account == name(_my_chain_constract)
+					&& action.name == N(transfer)) {
+					const auto* existed = db.find<transaction_reversible_object, by_trx_id>(trx->id);
+					if (existed != nullptr) {
+						return;
+					}
 
-						const auto transaction_reversible = db.create<transaction_reversible_object>([&](auto& tso) {
-							tso.block_num = block_num;
-							tso.trx_id = trx->id;
-							tso.data = action.data;
+					const auto transaction_reversible = db.create<transaction_reversible_object>([&](auto& tso) {
+						tso.block_num = block_num;
+						tso.trx_id = trx->id;
+						tso.data = action.data;
+					});
+					break;
+
+				} else if (action.account == name(_my_chain_constract)
+						   && action.name == N(msigtrans)) {
+
+					auto data = fc::raw::unpack<cactus_msigtrans>(action.data);
+
+					const auto* existed = db.find<transaction_executed_object, by_trx_id>(data.trx_id);
+
+					if(existed != nullptr) {
+						db.modify(existed[0] ,[&] (auto& tso) {
+							++tso.count;
+							tso.timestamp = chain.pending_block_time();
 						});
-						break;
-
-					} else if (action.account == N(eosio.token)
-							   && action.name == N(transfer)
-							   && action.authorization.front().actor == name(_my_chain_constract)) { // 由cactus合约账号向外转账
-
+					}else {
 						const auto transaction_executed = db.create<transaction_executed_object>([&](auto &tso) {
-							tso.block_num = block_num;
-							tso.trx_id = trx->id;
+							tso.trx_id = data.trx_id;
 							tso.data = action.data;
-
+							tso.count = 1;
+							tso.timestamp = chain.pending_block_time();
 							//问题一  执行一次合约 进入两次 会存放两条相同的数据 转账一次 拔毛一次  我们的合约暂时不考虑拔毛
 							wlog("捕获一条转账 ${block_num}",("block_num",block_num));
 						});
-						break;
-
 					}
+					break;
+
 				}
 			}
+		}
 
-			void send_transaction(const block_state_ptr& irb) {
-				auto& chain = chain_plug->chain();
-				auto& db = chain.db();
+		void send_transaction(const block_state_ptr& irb) {
+			auto& chain = chain_plug->chain();
+			auto& db = chain.db();
 
-				const auto& trmi = db.get_index<transaction_reversible_multi_index, by_block_num>();
-				auto itr = trmi.begin();
-				while( itr != trmi.end()) {
-					if (itr->block_num <= irb->block_num) {
-						auto data = fc::raw::unpack<cactus_transfer>(itr->data);
-						// need to validate ?
+			const auto& trmi = db.get_index<transaction_reversible_multi_index, by_block_num>();
+			auto itr = trmi.begin();
+			while( itr != trmi.end()) {
+				if (itr->block_num <= irb->block_num) {
+					auto data = fc::raw::unpack<cactus_transfer>(itr->data);
+					// need to validate ?
 
-						// send propose or approve
-						string datastr = DATA_FORMAT(_peer_chain_account, string(itr->trx_id), string(data.to), data.quantity.to_string());
+					// send propose or approve
+					string datastr = DATA_FORMAT(_peer_chain_account, string(itr->trx_id), string(data.from), string(data.to), data.quantity.to_string());
+					vector<string> permissions = {_peer_chain_account};
+					try {
+						app().find_plugin<client_plugin>()->get_client_apis().push_action(_peer_chain_address, _peer_chain_constract,
+																						  "msigtrans", datastr, permissions);
+					} catch (...) {
+						wlog("send transaction failed");
+					}
+
+					// remove or move to other table ?
+					db.remove(*itr);
+				}
+				++ itr;
+			}
+
+			const auto &temi = db.get_index<transaction_executed_multi_index, by_id>();
+			auto irreversible_block_num = irb;
+
+			auto titr = temi.begin();
+			while (titr != temi.end()) {
+				if (titr->timestamp <= irb->header.timestamp.to_time_point() && titr->count < 2) {
+					if(irb->header.timestamp.to_time_point().sec_since_epoch() - titr->timestamp.sec_since_epoch() > 60) {
+
+
+//						history_apis::read_only::get_transaction_params params;
+//						params.id = titr->trx_id;
+//						params.block_num_hint = titr->block_num;
+//
+//						wlog("参数1 params.id= ${params.id}",("params.id",params.id));
+//						wlog("参数2 params.block_num_hint= ${params.id}",("params.id",params.block_num_hint));
+//						auto ro_api = app().get_plugin<history_plugin>().get_read_only_api();
+//
+//						try {
+//							auto result =ro_api.get_transaction(params);
+//							wlog("根据2个参数 成功查到数据 ${result}",("result",result));
+//							db.remove(*titr);
+//						}catch(exception &exce) {
+//
+//							std::cout << "titr->trx_id" << titr->trx_id << std::endl;
+//							std::cout << "titr->block_num" << titr->block_num << std::endl;
+//							wlog("出现异常");
+//							auto data = fc::raw::unpack<cactus_transfer>(titr->data);
+//							wlog("by sf tx-id: ${num}==${id},data【${from} -> ${to} ${quantity}】",
+//								 ("num", titr->block_num)("id", titr->trx_id)("from", data.from)
+//										 ("to", data.to)("quantity", data.quantity));
+						auto data = fc::raw::unpack<cactus_msigtrans>(titr->data);
+						string datastr = DATA_FORMAT(_peer_chain_account, string(data.trx_id), string(data.to), string(data.from), data.quantity.to_string());
 						vector<string> permissions = {_peer_chain_account};
 						try {
-							app().find_plugin<client_plugin>()->get_client_apis().push_action(_peer_chain_address, _peer_chain_constract,
-																							  "msigtrans", datastr, permissions);
+							app().find_plugin<client_plugin>()->get_client_apis().push_action(_peer_chain_address,
+																							  _peer_chain_constract,
+																							  "msigtrans", datastr,
+																							  permissions);
 						} catch (...) {
-							wlog("send transaction failed");
+
 						}
 
-						// remove or move to other table ?
-						db.remove(*itr);
+						db.remove(*titr);
 					}
-					++ itr;
 				}
-
-				const auto &temi = db.get_index<transaction_executed_multi_index, by_block_num>();
-				auto irreversible_block_num = irb->block_num;
-
-				auto titr = temi.begin();
-				while (titr != temi.end()) {
-					if (titr->block_num <= irreversible_block_num) {
-						//history
-						history_apis::read_only::get_transaction_params params;
-						params.id = titr->trx_id;
-						params.block_num_hint = titr->block_num;
-
-						wlog("参数1 params.id= ${params.id}",("params.id",params.id));
-						wlog("参数2 params.block_num_hint= ${params.id}",("params.id",params.block_num_hint));
-						auto ro_api = app().get_plugin<history_plugin>().get_read_only_api();
-
-						try {
-							auto result =ro_api.get_transaction(params);
-							wlog("根据2个参数 成功查到数据 ${result}",("result",result));
-							db.remove(*titr);
-						}catch(exception &exce) {
-
-							std::cout << "titr->trx_id" << titr->trx_id << std::endl;
-							std::cout << "titr->block_num" << titr->block_num << std::endl;
-							wlog("出现异常");
-							auto data = fc::raw::unpack<cactus_transfer>(titr->data);
-							wlog("by sf tx-id: ${num}==${id},data【${from} -> ${to} ${quantity}】",
-								 ("num", titr->block_num)("id", titr->trx_id)("from", data.from)
-										 ("to", data.to)("quantity", data.quantity));
-//                            db.create<transaction_executed_object>([&](auto &teo) {
-//                                teo.block_num = itr->block_num;
-//                                teo.trx_id = itr->trx_id;
-//                                teo.data = itr->data;
-//                            });
-//                            app().get_plugin<client_plugin>().get_client_apis().push_transaction()
-							db.remove(*titr);
-						}
-					}
-					++titr;
-				}
+				++titr;
 			}
+		}
 	};
 
 	sync_plugin::sync_plugin()
-	:my(std::make_shared<sync_plugin_impl>()) {
+			:my(std::make_shared<sync_plugin_impl>()) {
 	}
 
 	sync_plugin::~sync_plugin() {
@@ -211,7 +262,7 @@ namespace eosio {
 				("peer-chain-account", bpo::value<string>()->default_value("cactus"), "In MainChain it is your SideChain's account, otherwise it's your MainChain's account")
 				("peer-chain-constract", bpo::value<string>()->default_value("cactus"), "In MainChain it is SideChain's cactus constract, otherwise it's MainChain's cactus constract")
 				("my-chain-constract", bpo::value<string>()->default_value("cactus"), "this chain's cactus contract")
-			;
+				;
 	}
 
 	void sync_plugin::plugin_initialize(const variables_map& options) {
@@ -228,7 +279,10 @@ namespace eosio {
 			chain.db().add_index<transaction_reversible_multi_index>();
 			chain.db().add_index<transaction_executed_multi_index>();
 
-			my->accepted_transaction_connection.emplace(chain.accepted_transaction.connect( [&](const transaction_metadata_ptr& trx) {
+//			my->accepted_transaction_connection.emplace(chain.accepted_transaction.connect( [&](const transaction_metadata_ptr& trx) {
+//				my->accepted_transaction(trx);
+//			}));
+			my->sync_block_transaction_connection.emplace(chain.sync_block_transaction.connect( [&](const transaction_metadata_ptr& trx) {
 				my->accepted_transaction(trx);
 			}));
 			my->irreversible_block_connection.emplace(chain.irreversible_block.connect( [&](const block_state_ptr& irb) {
@@ -243,6 +297,7 @@ namespace eosio {
 
 	void sync_plugin::plugin_shutdown() {
 		my->accepted_transaction_connection.reset();
+		my->sync_block_transaction_connection.reset();
 		my->irreversible_block_connection.reset();
 	}
 
