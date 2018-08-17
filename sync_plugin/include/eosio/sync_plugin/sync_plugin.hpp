@@ -1,7 +1,10 @@
 #pragma once
 #include <appbase/application.hpp>
+#include <eosio/chain/action.hpp>
 
+#include <eosio/chain/controller.hpp>
 #include <eosio/chain_plugin/chain_plugin.hpp>
+#include <eosio/client_plugin/client_plugin.hpp>
 namespace eosio {
 	using boost::signals2::signal;
 
@@ -23,4 +26,21 @@ namespace eosio {
 	private:
 		std::shared_ptr<class sync_plugin_impl> my;
 	};
+
+//	class read_only {
+//		 shared_ptr<class sync_plugin_impl> sync;
+//
+//		 public:
+//		 	read_only(shared_ptr<class sync_plugin_impl> sync) : sync(sync) {}
+//
+//		 	struct get_executed_transaction_result {
+//
+//		 	};
+//
+//		 get_executed_transaction_result get_executed_transaction() const;
+//
+//	};
+
+
+
 } /// namespace eosio

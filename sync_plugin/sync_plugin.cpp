@@ -4,81 +4,6 @@
 
 #include <eosio/sync_plugin/sync_plugin.hpp>
 
-#include <eosio/chain/controller.hpp>
-#include <eosio/chain_plugin/chain_plugin.hpp>
-#include <eosio/history_plugin/history_plugin.hpp>
-#include <eosio/client_plugin/client_plugin.hpp>
-
-#include <eosio/chain/action.hpp>
-
-namespace eosio { namespace chain {
-		struct cactus_transfer {
-			account_name from;
-			account_name to;
-			asset quantity;
-
-			cactus_transfer() = default;
-			cactus_transfer(const account_name &from, const account_name &to, const asset &quantity) : from(from), to(to), quantity(quantity) {}
-		};
-
-		struct cactus_msigtrans {
-			account_name user;
-			transaction_id_type trx_id;
-			account_name from;
-			account_name to;
-			asset quantity;
-			cactus_msigtrans() = default;
-		};
-	}}
-FC_REFLECT( eosio::chain::cactus_transfer, (from)(to)(quantity))
-FC_REFLECT( eosio::chain::cactus_msigtrans, (user)(trx_id)(from)(to)(quantity))
-
-#ifndef DEFINE_INDEX
-#define DEFINE_INDEX(object_type, object_name, index_name) \
-	struct object_name \
-			: public chainbase::object<object_type, object_name> { \
-			OBJECT_CTOR(object_name) \
-			id_type id; \
-			uint32_t block_num; \
-			transaction_id_type trx_id; \
-			action_data data; \
-	}; \
-	\
-	using index_name = chainbase::shared_multi_index_container< \
-		object_name, \
-		indexed_by< \
-				ordered_unique<tag<by_id>, member<object_name, object_name::id_type, &object_name::id>>, \
-				ordered_unique<tag<by_trx_id>, member<object_name, transaction_id_type, &object_name::trx_id>>, \
-				ordered_non_unique<tag<by_block_num>, member<object_name, uint32_t, &object_name::block_num>> \
-		> \
-	>;
-#endif
-
-#ifndef DEFINE_INDEX2
-#define DEFINE_INDEX2(object_type, object_name, index_name) \
-	struct object_name \
-			: public chainbase::object<object_type, object_name> { \
-			OBJECT_CTOR(object_name) \
-			id_type id; \
-			transaction_id_type trx_id; \
-			action_data data; \
-            time_point timestamp; \
-			uint32_t count; \
-	}; \
-	\
-	using index_name = chainbase::shared_multi_index_container< \
-		object_name, \
-		indexed_by< \
-				ordered_unique<tag<by_id>, member<object_name, object_name::id_type, &object_name::id>>, \
-				ordered_unique<tag<by_trx_id>, member<object_name, transaction_id_type, &object_name::trx_id>> \
-		> \
-	>;
-#endif
-
-#ifndef DATA_FORMAT
-#define DATA_FORMAT(user, trx_id, from, to, quantity) "[\""+user+"\", \""+trx_id+"\", \""+from+"\", \""+to+"\", \""+quantity+"\"]"
-#endif
-
 namespace eosio {
 
 	using namespace chain;
@@ -86,23 +11,98 @@ namespace eosio {
 
 	static appbase::abstract_plugin &_sync_plugin = app().register_plugin<sync_plugin>();
 
+   struct cactus_transfer {
+		account_name from;
+		account_name to;
+		asset quantity;
+  	};
+
+  	struct cactus_msigtrans {
+		account_name user;
+		transaction_id_type trx_id;
+		account_name from;
+		account_name to;
+		asset quantity;
+  	};
+
 	struct by_block_num;
+	struct by_timestamp;
 	struct by_trx_id;
 
-	DEFINE_INDEX(transaction_reversible_object_type, transaction_reversible_object, transaction_reversible_multi_index)
-	DEFINE_INDEX2(transaction_executed_object_type, transaction_executed_object, transaction_executed_multi_index)
+ 	struct transaction_reversible_object
+			: public chainbase::object<transaction_reversible_object_type, transaction_reversible_object> { \
+			OBJECT_CTOR(transaction_reversible_object)
+			id_type id;
+			uint32_t block_num;
+			transaction_id_type trx_id;
+			action_data data;
+	};
+
+	using transaction_reversible_multi_index = chainbase::shared_multi_index_container<
+		transaction_reversible_object,
+		indexed_by<
+				ordered_unique<tag<by_id>, member<transaction_reversible_object, transaction_reversible_object::id_type, &transaction_reversible_object::id>>,
+				ordered_unique<tag<by_trx_id>, member<transaction_reversible_object, transaction_id_type, &transaction_reversible_object::trx_id>>,
+				ordered_non_unique<tag<by_block_num>, member<transaction_reversible_object, uint32_t, &transaction_reversible_object::block_num>>
+		>
+	>;
+
+   struct transaction_executed_object
+			: public chainbase::object<transaction_executed_object_type, transaction_executed_object> {
+			OBJECT_CTOR(transaction_executed_object)
+			id_type id;
+			transaction_id_type trx_id;
+			action_data data;
+			time_point timestamp;
+			uint32_t count;
+	};
+
+	using transaction_executed_multi_index = chainbase::shared_multi_index_container<
+		transaction_executed_object,
+		indexed_by<
+				ordered_unique<tag<by_id>, member<transaction_executed_object, transaction_executed_object::id_type, &transaction_executed_object::id>>,
+				ordered_unique<tag<by_trx_id>, member<transaction_executed_object, transaction_id_type, &transaction_executed_object::trx_id>>,
+				ordered_non_unique<tag<by_timestamp>, member<transaction_executed_object, time_point, &transaction_executed_object::timestamp>>
+		>
+	>;
+
+	struct transaction_success_object
+			  : public chainbase::object<transaction_success_object_type, transaction_success_object> {
+		 OBJECT_CTOR(transaction_success_object)
+		 id_type id;
+		 transaction_id_type trx_id;
+		 action_data data;
+		 time_point timestamp;
+	};
+
+	 using transaction_success_multi_index = chainbase::shared_multi_index_container<
+		transaction_success_object,
+		indexed_by<
+				  ordered_unique<tag<by_id>, member<transaction_success_object, transaction_success_object::id_type, &transaction_success_object::id>>,
+				  ordered_unique<tag<by_trx_id>, member<transaction_success_object, transaction_id_type, &transaction_success_object::trx_id>>,
+				  ordered_non_unique<tag<by_timestamp>, member<transaction_success_object, time_point, &transaction_success_object::timestamp>>
+		>
+	 >;
 }
+FC_REFLECT( eosio::cactus_transfer, (from)(to)(quantity))
+FC_REFLECT( eosio::cactus_msigtrans, (user)(trx_id)(from)(to)(quantity))
 
 CHAINBASE_SET_INDEX_TYPE(eosio::transaction_reversible_object, eosio::transaction_reversible_multi_index)
 CHAINBASE_SET_INDEX_TYPE(eosio::transaction_executed_object, eosio::transaction_executed_multi_index)
+CHAINBASE_SET_INDEX_TYPE(eosio::transaction_success_object, eosio::transaction_success_multi_index)
+
+#ifndef DATA_FORMAT
+#define DATA_FORMAT(user, trx_id, from, to, quantity) "[\""+user+"\", \""+trx_id+"\", \""+from+"\", \""+to+"\", \""+quantity+"\"]"
+#endif
+
 
 namespace eosio {
 
 	class sync_plugin_impl {
 	public:
-		chain_plugin*       chain_plug = nullptr;
+		chain_plugin*     chain_plug = nullptr;
 		fc::microseconds 	_max_irreversible_transaction_age_us;
-		bool				_send_propose_enabled = false;
+		bool					_send_propose_enabled = false;
 		string 				_peer_chain_address;
 		string 				_peer_chain_account;
 		string 				_peer_chain_constract;
@@ -160,7 +160,6 @@ namespace eosio {
 							tso.data = action.data;
 							tso.count = 1;
 							tso.timestamp = chain.pending_block_time();
-							//问题一  执行一次合约 进入两次 会存放两条相同的数据 转账一次 拔毛一次  我们的合约暂时不考虑拔毛
 							wlog("捕获一条转账 ${block_num}",("block_num",block_num));
 						});
 					}
@@ -170,7 +169,7 @@ namespace eosio {
 			}
 		}
 
-		void send_transaction(const block_state_ptr& irb) {
+		void apply_irreversible_transaction(const block_state_ptr& irb) {
 			auto& chain = chain_plug->chain();
 			auto& db = chain.db();
 
@@ -188,7 +187,7 @@ namespace eosio {
 						app().find_plugin<client_plugin>()->get_client_apis().push_action(_peer_chain_address, _peer_chain_constract,
 																						  "msigtrans", datastr, permissions);
 					} catch (...) {
-						wlog("send transaction failed");
+						wlog("send transfer transaction failed");
 					}
 
 					// remove or move to other table ?
@@ -197,36 +196,13 @@ namespace eosio {
 				++ itr;
 			}
 
-			const auto &temi = db.get_index<transaction_executed_multi_index, by_id>();
+			const auto &temi = db.get_index<transaction_executed_multi_index, by_timestamp>();
 			auto irreversible_block_num = irb;
 
 			auto titr = temi.begin();
 			while (titr != temi.end()) {
 				if (titr->timestamp <= irb->header.timestamp.to_time_point() && titr->count < 2) {
 					if(irb->header.timestamp.to_time_point().sec_since_epoch() - titr->timestamp.sec_since_epoch() > 60) {
-
-
-//						history_apis::read_only::get_transaction_params params;
-//						params.id = titr->trx_id;
-//						params.block_num_hint = titr->block_num;
-//
-//						wlog("参数1 params.id= ${params.id}",("params.id",params.id));
-//						wlog("参数2 params.block_num_hint= ${params.id}",("params.id",params.block_num_hint));
-//						auto ro_api = app().get_plugin<history_plugin>().get_read_only_api();
-//
-//						try {
-//							auto result =ro_api.get_transaction(params);
-//							wlog("根据2个参数 成功查到数据 ${result}",("result",result));
-//							db.remove(*titr);
-//						}catch(exception &exce) {
-//
-//							std::cout << "titr->trx_id" << titr->trx_id << std::endl;
-//							std::cout << "titr->block_num" << titr->block_num << std::endl;
-//							wlog("出现异常");
-//							auto data = fc::raw::unpack<cactus_transfer>(titr->data);
-//							wlog("by sf tx-id: ${num}==${id},data【${from} -> ${to} ${quantity}】",
-//								 ("num", titr->block_num)("id", titr->trx_id)("from", data.from)
-//										 ("to", data.to)("quantity", data.quantity));
 						auto data = fc::raw::unpack<cactus_msigtrans>(titr->data);
 						string datastr = DATA_FORMAT(_peer_chain_account, string(data.trx_id), string(data.to), string(data.from), data.quantity.to_string());
 						vector<string> permissions = {_peer_chain_account};
@@ -236,7 +212,7 @@ namespace eosio {
 																							  "msigtrans", datastr,
 																							  permissions);
 						} catch (...) {
-
+							wlog("send re-transfer transaction failed");
 						}
 
 						db.remove(*titr);
@@ -256,7 +232,7 @@ namespace eosio {
 
 	void sync_plugin::set_program_options(options_description& cli, options_description& cfg) {
 		cfg.add_options()
-				("max-irreversible-transaction-age", bpo::value<int32_t>()->default_value( -1 ), "Max irreversible age of transaction to deal")
+				("max-irreversible-transaction-age", bpo::value<int32_t>()->default_value( 600 ), "Max irreversible age of transaction to deal")
 				("enable-send-propose", bpo::bool_switch()->notifier([this](bool e){my->_send_propose_enabled = e;}), "Enable push propose.")
 				("peer-chain-address", bpo::value<string>()->default_value("http://127.0.0.1:8899/"), "In MainChain it is SideChain address, otherwise it's MainChain address")
 				("peer-chain-account", bpo::value<string>()->default_value("cactus"), "In MainChain it is your SideChain's account, otherwise it's your MainChain's account")
@@ -279,14 +255,11 @@ namespace eosio {
 			chain.db().add_index<transaction_reversible_multi_index>();
 			chain.db().add_index<transaction_executed_multi_index>();
 
-//			my->accepted_transaction_connection.emplace(chain.accepted_transaction.connect( [&](const transaction_metadata_ptr& trx) {
-//				my->accepted_transaction(trx);
-//			}));
 			my->sync_block_transaction_connection.emplace(chain.sync_block_transaction.connect( [&](const transaction_metadata_ptr& trx) {
 				my->accepted_transaction(trx);
 			}));
 			my->irreversible_block_connection.emplace(chain.irreversible_block.connect( [&](const block_state_ptr& irb) {
-				my->send_transaction(irb);
+				my->apply_irreversible_transaction(irb);
 			}));
 
 		} FC_LOG_AND_RETHROW()
