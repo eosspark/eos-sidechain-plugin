@@ -54,7 +54,7 @@ namespace eosio {
 			transaction_id_type trx_id;
 			action_data data;
 			time_point timestamp;
-			uint32_t count;
+			uint8_t count;
 	};
 
 	using transaction_executed_multi_index = chainbase::shared_multi_index_container<
@@ -66,23 +66,29 @@ namespace eosio {
 		>
 	>;
 
-	struct transaction_success_object
-			  : public chainbase::object<transaction_success_object_type, transaction_success_object> {
-		 OBJECT_CTOR(transaction_success_object)
-		 id_type id;
-		 transaction_id_type trx_id;
-		 action_data data;
-		 time_point timestamp;
-	};
+	#ifndef TRANSANSACTION_HISTORY_TABLE
+	#define TRANSANSACTION_HISTORY_TABLE(name) \
+		struct name##_object \
+		: public chainbase::object<name##_object_type, name##_object> { \
+			 OBJECT_CTOR(name##_object) \
+			 id_type id; \
+			 transaction_id_type trx_id; \
+			 action_data data; \
+			 time_point timestamp; \
+		}; \
+			\
+		 using name##_multi_index = chainbase::shared_multi_index_container< \
+			name##_object, \
+			indexed_by< \
+					  ordered_unique<tag<by_id>, member<name##_object, name##_object::id_type, &name##_object::id>>, \
+					  ordered_unique<tag<by_trx_id>, member<name##_object, transaction_id_type, &name##_object::trx_id>>, \
+					  ordered_non_unique<tag<by_timestamp>, member<name##_object, time_point, &name##_object::timestamp>> \
+			> \
+		 >;
+	#endif
 
-	 using transaction_success_multi_index = chainbase::shared_multi_index_container<
-		transaction_success_object,
-		indexed_by<
-				  ordered_unique<tag<by_id>, member<transaction_success_object, transaction_success_object::id_type, &transaction_success_object::id>>,
-				  ordered_unique<tag<by_trx_id>, member<transaction_success_object, transaction_id_type, &transaction_success_object::trx_id>>,
-				  ordered_non_unique<tag<by_timestamp>, member<transaction_success_object, time_point, &transaction_success_object::timestamp>>
-		>
-	 >;
+ 	TRANSANSACTION_HISTORY_TABLE(transaction_success)
+	TRANSANSACTION_HISTORY_TABLE(transaction_failure)
 }
 FC_REFLECT( eosio::cactus_transfer, (from)(to)(quantity))
 FC_REFLECT( eosio::cactus_msigtrans, (user)(trx_id)(from)(to)(quantity))
@@ -90,11 +96,9 @@ FC_REFLECT( eosio::cactus_msigtrans, (user)(trx_id)(from)(to)(quantity))
 CHAINBASE_SET_INDEX_TYPE(eosio::transaction_reversible_object, eosio::transaction_reversible_multi_index)
 CHAINBASE_SET_INDEX_TYPE(eosio::transaction_executed_object, eosio::transaction_executed_multi_index)
 CHAINBASE_SET_INDEX_TYPE(eosio::transaction_success_object, eosio::transaction_success_multi_index)
+CHAINBASE_SET_INDEX_TYPE(eosio::transaction_failure_object, eosio::transaction_failure_multi_index)
 
-#ifndef DATA_FORMAT
 #define DATA_FORMAT(user, trx_id, from, to, quantity) "[\""+user+"\", \""+trx_id+"\", \""+from+"\", \""+to+"\", \""+quantity+"\"]"
-#endif
-
 
 namespace eosio {
 
@@ -151,7 +155,7 @@ namespace eosio {
 
 					if(existed != nullptr) {
 						db.modify(existed[0] ,[&] (auto& tso) {
-							++tso.count;
+							++ tso.count;
 							tso.timestamp = chain.pending_block_time();
 						});
 					}else {
@@ -169,6 +173,8 @@ namespace eosio {
 			}
 		}
 
+		const uint8_t required_confs = 2;
+
 		void apply_irreversible_transaction(const block_state_ptr& irb) {
 			auto& chain = chain_plug->chain();
 			auto& db = chain.db();
@@ -184,6 +190,7 @@ namespace eosio {
 					string datastr = DATA_FORMAT(_peer_chain_account, string(itr->trx_id), string(data.from), string(data.to), data.quantity.to_string());
 					vector<string> permissions = {_peer_chain_account};
 					try {
+						ilog(datastr);
 						app().find_plugin<client_plugin>()->get_client_apis().push_action(_peer_chain_address, _peer_chain_constract,
 																						  "msigtrans", datastr, permissions);
 					} catch (...) {
@@ -201,7 +208,7 @@ namespace eosio {
 
 			auto titr = temi.begin();
 			while (titr != temi.end()) {
-				if (titr->timestamp <= irb->header.timestamp.to_time_point() && titr->count < 2) {
+				if (titr->timestamp <= irb->header.timestamp.to_time_point() && titr->count < required_confs) {
 					if(irb->header.timestamp.to_time_point().sec_since_epoch() - titr->timestamp.sec_since_epoch() > 60) {
 						auto data = fc::raw::unpack<cactus_msigtrans>(titr->data);
 						string datastr = DATA_FORMAT(_peer_chain_account, string(data.trx_id), string(data.to), string(data.from), data.quantity.to_string());
@@ -211,14 +218,31 @@ namespace eosio {
 																							  _peer_chain_constract,
 																							  "msigtrans", datastr,
 																							  permissions);
+
+							db.create<transaction_failure_object>([&](auto &tso) {
+								 tso.trx_id = titr->trx_id;
+								 tso.data = titr->data;
+								 tso.timestamp = titr->timestamp;
+							});
+
+							db.remove(*titr);
+
 						} catch (...) {
 							wlog("send re-transfer transaction failed");
 						}
-
-						db.remove(*titr);
 					}
+
+				} else if (titr->timestamp <= irb->header.timestamp.to_time_point() && titr->count >= required_confs) {
+					db.create<transaction_success_object>([&](auto &tso) {
+						 tso.trx_id = titr->trx_id;
+						 tso.data = titr->data;
+						 tso.timestamp = titr->timestamp;
+					});
+
+					db.remove(*titr);
 				}
-				++titr;
+
+				++ titr;
 			}
 		}
 	};
@@ -232,7 +256,7 @@ namespace eosio {
 
 	void sync_plugin::set_program_options(options_description& cli, options_description& cfg) {
 		cfg.add_options()
-				("max-irreversible-transaction-age", bpo::value<int32_t>()->default_value( 600 ), "Max irreversible age of transaction to deal")
+				("max-irreversible-transaction-age", bpo::value<int32_t>()->default_value( 60 ), "Max irreversible age of transaction to deal")
 				("enable-send-propose", bpo::bool_switch()->notifier([this](bool e){my->_send_propose_enabled = e;}), "Enable push propose.")
 				("peer-chain-address", bpo::value<string>()->default_value("http://127.0.0.1:8899/"), "In MainChain it is SideChain address, otherwise it's MainChain address")
 				("peer-chain-account", bpo::value<string>()->default_value("cactus"), "In MainChain it is your SideChain's account, otherwise it's your MainChain's account")
@@ -254,6 +278,8 @@ namespace eosio {
 
 			chain.db().add_index<transaction_reversible_multi_index>();
 			chain.db().add_index<transaction_executed_multi_index>();
+			chain.db().add_index<transaction_success_multi_index>();
+			chain.db().add_index<transaction_failure_multi_index>();
 
 			my->sync_block_transaction_connection.emplace(chain.sync_block_transaction.connect( [&](const transaction_metadata_ptr& trx) {
 				my->accepted_transaction(trx);
@@ -272,6 +298,36 @@ namespace eosio {
 		my->accepted_transaction_connection.reset();
 		my->sync_block_transaction_connection.reset();
 		my->irreversible_block_connection.reset();
+	}
+
+
+	namespace sync_apis {
+
+		#define GET_TRANSACTION_RESULT(name, params...) \
+			vector<read_only::get_executed_transaction_result> result; \
+				  auto& chain = sync->chain_plug->chain(); \
+				  auto& db = chain.db(); \
+				  const auto &temi = db.get_index<name, by_timestamp>(); \
+				  auto itr = temi.begin(); \
+				  while (itr != temi.end()) { \
+					  auto data = fc::raw::unpack<cactus_msigtrans>(itr->data); \
+					  result.emplace_back(params); \
+					  itr ++; \
+				  } \
+				  \
+				  return result; \
+
+		vector<read_only::get_executed_transaction_result> read_only::get_executed_transaction() const {
+			GET_TRANSACTION_RESULT(transaction_executed_multi_index, itr->trx_id, data.from, data.to, data.quantity, itr->timestamp, itr->count)
+		}
+
+		vector<read_only::get_executed_transaction_result> read_only::get_success_transaction() const {
+			GET_TRANSACTION_RESULT(transaction_success_multi_index, itr->trx_id, data.from, data.to, data.quantity, itr->timestamp)
+		}
+
+		vector<read_only::get_executed_transaction_result> read_only::get_failure_transaction() const {
+		   GET_TRANSACTION_RESULT(transaction_failure_multi_index, itr->trx_id, data.from, data.to, data.quantity, itr->timestamp)
+		}
 	}
 
 
